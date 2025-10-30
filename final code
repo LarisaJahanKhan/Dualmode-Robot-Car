@@ -1,0 +1,222 @@
+#include <DHT.h>
+#include <Servo.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+// -------------------- Pin Definitions --------------------
+const uint8_t trigPin       = 2;
+const uint8_t echoPin       = 3;
+const uint8_t ENA           = 4;
+const uint8_t IN1           = 8;
+const uint8_t IN2           = 9;
+const uint8_t ENB           = 5;
+const uint8_t IN3           = 10;
+const uint8_t IN4           = 11;
+const uint8_t modeSwitchPin = 6;
+const uint8_t DHTPIN        = 7;
+#define DHTTYPE DHT11
+const uint8_t SERVO_PIN     = 12;
+const int safeDistanceCm    = 20;
+const int motorSpeed        = 180;
+
+// -------------------- OLED Setup --------------------
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// -------------------- Globals --------------------
+DHT dht(DHTPIN, DHTTYPE);
+Servo servoMotor;
+unsigned long duration_us = 0;
+int distanceCm = 0;
+
+// -------------------- OLED Print Helpers --------------------
+void oledClear() {
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+}
+
+// works like Serial.println() on both
+void oledPrintln(const String &text) {
+  Serial.println(text);
+  display.println(text);
+  display.display();
+}
+
+// works like Serial.print() on both
+void oledPrint(const String &text) {
+  Serial.print(text);
+  display.print(text);
+  display.display();
+}
+
+// -------------------- Setup --------------------
+void setup() {
+  Serial.begin(115200);
+
+  // OLED init
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for (;;);
+  }
+  oledClear();
+  oledPrintln("Booting...");
+  delay(1000);
+
+  // Ultrasonic pins
+  pinMode(trigPin, OUTPUT);
+  digitalWrite(trigPin, LOW);
+  pinMode(echoPin, INPUT);
+
+  // Motor pins
+  pinMode(ENA, OUTPUT);
+  pinMode(ENB, OUTPUT);
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+
+  pinMode(modeSwitchPin, INPUT_PULLUP);
+
+  servoMotor.attach(SERVO_PIN);
+  servoMotor.write(90);
+
+  dht.begin();
+  stopMotors();
+
+  oledClear();
+  oledPrintln("System Ready");
+  oledPrintln("Default: Avoidance");
+  Serial.println("System Ready — Default: Object Avoidance Mode");
+}
+
+// -------------------- Helper Functions --------------------
+int getDistanceCm() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  duration_us = pulseIn(echoPin, HIGH, 30000UL);
+  if (duration_us == 0) return 999;
+
+  float dist = (duration_us * 0.0343f) / 2.0f;
+  return (int)(dist + 0.5f);
+}
+
+void moveForward() {
+  analogWrite(ENA, motorSpeed);
+  analogWrite(ENB, motorSpeed);
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+}
+
+void moveBackward() {
+  analogWrite(ENA, motorSpeed);
+  analogWrite(ENB, motorSpeed);
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
+}
+
+void stopMotors() {
+  analogWrite(ENA, 0);
+  analogWrite(ENB, 0);
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
+}
+
+void turnRight(int ms = 800) {
+  analogWrite(ENA, motorSpeed);
+  analogWrite(ENB, motorSpeed);
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
+  delay(ms);
+  stopMotors();
+}
+
+void turnLeft(int ms = 800) {
+  analogWrite(ENA, motorSpeed);
+  analogWrite(ENB, motorSpeed);
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+  delay(ms);
+  stopMotors();
+}
+
+// -------------------- Main Loop --------------------
+void loop() {
+  int modeState = digitalRead(modeSwitchPin);
+
+  if (modeState == HIGH) {
+    int distFront = getDistanceCm();
+    oledClear();
+    oledPrint("Avoid | Dist: ");
+    oledPrintln(String(distFront) + " cm");
+
+    if (distFront > safeDistanceCm) {
+      moveForward();
+    } else {
+      stopMotors();
+      delay(500);
+
+      servoMotor.write(90);
+      delay(200);
+
+      servoMotor.write(0);
+      delay(350);
+      int distRight = getDistanceCm();
+
+      servoMotor.write(180);
+      delay(350);
+      int distLeft = getDistanceCm();
+
+      servoMotor.write(90);
+      delay(200);
+
+      oledPrintln("R: " + String(distRight) + " | L: " + String(distLeft));
+
+      if (distRight > safeDistanceCm || distLeft > safeDistanceCm) {
+        if (distRight > distLeft) turnRight(450);
+        else turnLeft(450);
+        moveForward();
+        delay(300);
+      } else {
+        moveBackward();
+        delay(700);
+        stopMotors();
+      }
+    }
+
+    delay(50);
+  } 
+  else {
+    stopMotors();
+    float temp = dht.readTemperature();
+    float hum  = dht.readHumidity();
+
+    oledClear();
+    if (isnan(temp) || isnan(hum)) {
+      oledPrintln("DHT Error!");
+    } else {
+      oledPrintln("DHT Sensor Mode");
+      oledPrint("Temp: ");
+      oledPrintln(String(temp, 1) + " C");
+      oledPrint("Hum:  ");
+      oledPrintln(String(hum, 1) + " %");
+    }
+    delay(2000);
+  }
+}
